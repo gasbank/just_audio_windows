@@ -13,6 +13,7 @@
 #include <memory>
 #include <sstream>
 
+#include "platform_thread.hpp"
 #include "player.hpp"
 
 using flutter::EncodableMap;
@@ -22,6 +23,11 @@ namespace {
 
 // static std::unordered_map<std::string, AudioPlayer> players;
 std::vector<std::unique_ptr<AudioPlayer>> players_;
+
+// Marshals WinRT event callbacks onto the platform thread. Shared by every
+// player, and destroyed after all of them (see ~JustAudioWindowsPlugin) so a
+// player can never outlive the dispatcher it posts to.
+std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
 
 class JustAudioWindowsPlugin : public flutter::Plugin {
  public:
@@ -53,6 +59,8 @@ void JustAudioWindowsPlugin::RegisterWithRegistrar(
           registrar->messenger(), "com.ryanheise.just_audio.methods",
           &flutter::StandardMethodCodec::GetInstance());
 
+  dispatcher_ = std::make_shared<PlatformThreadDispatcher>();
+
   auto plugin = std::make_unique<JustAudioWindowsPlugin>();
 
   channel->SetMethodCallHandler(
@@ -65,7 +73,13 @@ void JustAudioWindowsPlugin::RegisterWithRegistrar(
 
 JustAudioWindowsPlugin::JustAudioWindowsPlugin() {}
 
-JustAudioWindowsPlugin::~JustAudioWindowsPlugin() {}
+JustAudioWindowsPlugin::~JustAudioWindowsPlugin() {
+  // players_ has static storage, so without this the players are destroyed at
+  // process exit — after the plugin and after the dispatcher they post to. Tear
+  // them down here instead, while the dispatcher is still alive, then release it.
+  players_.clear();
+  dispatcher_.reset();
+}
 
 void JustAudioWindowsPlugin::HandleMethodCall(
     const flutter::MethodCall<flutter::EncodableValue> &method_call,
@@ -78,7 +92,7 @@ void JustAudioWindowsPlugin::HandleMethodCall(
       if (!id) {
         return result->Error("argument_error", "id argument missing");
       }
-      auto player = std::make_unique<AudioPlayer>(*id, messenger);
+      auto player = std::make_unique<AudioPlayer>(*id, messenger, dispatcher_);
       players_.push_back(std::move(player));
       result->Success();
     } else if (method_call.method_name().compare("disposePlayer") == 0) {
