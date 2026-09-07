@@ -170,7 +170,7 @@ public:
   std::unique_ptr<JustAudioEventSink> event_sink_ = nullptr;
   std::unique_ptr<JustAudioEventSink> data_sink_ = nullptr;
 
-  bool buffering_progress_warned_ = false;
+  std::atomic<bool> buffered_ranges_warned_{false};
 
   // Drains on the platform thread, and outlives every player (see the plugin's
   // destructor), so holding it raw here would still be safe — the shared_ptr
@@ -652,28 +652,39 @@ public:
 
     auto now = std::chrono::system_clock::now();
 
-    // Try to get the buffering progress or use 1 if an error occurs
-    double bufferingProgress;
-    try
-    {
-      bufferingProgress = session.BufferingProgress();
-    }
-    catch (...)
-    {
-      // If an error occurs, log it and use 1 as the buffering progress. Once
-      // per player: a source that does not support the property does not start
-      // supporting it, so this otherwise repeated on every playback event.
-      if (!buffering_progress_warned_) {
-        buffering_progress_warned_ = true;
-        std::cerr << "[just_audio_windows]: Broadcast playback event error: Error accessing BufferingProgress. Using default value of 1." << std::endl;
+    // BufferingProgress describes filling the playback buffer, not a fraction
+    // of the media duration. Query actual buffered time ranges instead.
+    const auto state = session.PlaybackState();
+    const int64_t position = TO_MICROSECONDS(session.Position());
+    int64_t bufferedPosition = position > 0 ? position : 0;
+    if (state != Playback::MediaPlaybackState::None &&
+        state != Playback::MediaPlaybackState::Opening) {
+      try {
+        for (const auto& range : session.GetBufferedRanges()) {
+          const int64_t start = TO_MICROSECONDS(range.Start);
+          const int64_t end = TO_MICROSECONDS(range.End);
+          // Do not report a disconnected future range as playable from here.
+          if (start <= bufferedPosition && end > bufferedPosition) {
+            bufferedPosition = end;
+          }
+        }
+      } catch (const winrt::hresult_error& error) {
+        // Keep playback events flowing without claiming the entire source is
+        // buffered. Preserve the real failure for diagnosis, once per player.
+        if (!buffered_ranges_warned_.exchange(true)) {
+          std::cerr << "[just_audio_windows] GetBufferedRanges failed (HRESULT "
+                    << error.code().value << "): "
+                    << winrt::to_string(error.message()) << std::endl;
+        }
       }
-      bufferingProgress = 1;
     }
-
-    eventData[flutter::EncodableValue("processingState")] = flutter::EncodableValue(processingState(session.PlaybackState()));
-    eventData[flutter::EncodableValue("updatePosition")] = flutter::EncodableValue(TO_MICROSECONDS(session.Position())); //int
+    if (duration > 0 && bufferedPosition > duration) {
+      bufferedPosition = duration;
+    }
+    eventData[flutter::EncodableValue("processingState")] = flutter::EncodableValue(processingState(state));
+    eventData[flutter::EncodableValue("updatePosition")] = flutter::EncodableValue(position); //int
     eventData[flutter::EncodableValue("updateTime")] = flutter::EncodableValue(TO_MILLISECONDS(now.time_since_epoch())); //int
-    eventData[flutter::EncodableValue("bufferedPosition")] = flutter::EncodableValue((int64_t)(duration * bufferingProgress)); //int
+    eventData[flutter::EncodableValue("bufferedPosition")] = flutter::EncodableValue(bufferedPosition); //int
     eventData[flutter::EncodableValue("duration")] = flutter::EncodableValue(duration); //int
 
     if (mediaPlaybackList.Items().Size() > 0) {
