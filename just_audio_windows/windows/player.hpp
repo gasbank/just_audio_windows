@@ -345,7 +345,7 @@ public:
   ) {
     const auto* args = std::get_if<flutter::EncodableMap>(method_call.arguments());
 
-    JAW_TRACE("[just_audio_windows] Called " << method_call.method_name());
+    // JAW_TRACE("[just_audio_windows] Called " << method_call.method_name());
 
     if (method_call.method_name().compare("load") == 0) {
       const auto* audioSourceData = std::get_if<flutter::EncodableMap>(ValueOrNull(*args, "audioSource"));
