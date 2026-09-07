@@ -153,6 +153,7 @@ private:
     disposed_ = true;
     auto session = mediaPlayer.PlaybackSession();
     session.PlaybackStateChanged(playback_state_token_);
+    session.BufferedRangesChanged(buffered_ranges_token_);
     mediaPlayer.MediaFailed(media_failed_token_);
     mediaPlaybackList.CurrentItemChanged(item_changed_token_);
     mediaPlaybackList.ItemFailed(item_failed_token_);
@@ -201,6 +202,7 @@ public:
 
   // Tokens for event unsubscription
   winrt::event_token playback_state_token_{};
+  winrt::event_token buffered_ranges_token_{};
   winrt::event_token media_failed_token_{};
   winrt::event_token item_changed_token_{};
   winrt::event_token item_failed_token_{};
@@ -248,6 +250,14 @@ public:
       if (disposed_) return;
       broadcastState();
     });
+
+    // Buffered data can grow without any playback-state transition.
+    // broadcastState marshals channel writes onto the platform thread.
+    buffered_ranges_token_ = mediaPlayer.PlaybackSession().BufferedRangesChanged(
+      [this](auto, const auto&) {
+        if (disposed_) return;
+        broadcastState();
+      });
 
     // Player error event
     media_failed_token_ = mediaPlayer.MediaFailed([this](auto, const Playback::MediaPlayerFailedEventArgs& args) -> void {
